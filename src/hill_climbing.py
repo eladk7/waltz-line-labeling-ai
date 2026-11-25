@@ -837,6 +837,7 @@ class HCStats:
     best_h: int = 0
     solved: bool = False
     cancelled: bool = False
+    stop_reason: str = "RESTART_LIMIT"
 
 
 def random_restart_hc(
@@ -848,6 +849,8 @@ def random_restart_hc(
     *,
     on_event=None,
     cancel=None,
+    max_evaluations=None,
+    timeout=None,
 ):
 
     if not isinstance(budget, int) or budget <= 0:
@@ -869,12 +872,18 @@ def random_restart_hc(
     best = None
     best_h = float("inf")
 
-    # Number of junction checks in a full neighborhood scan
-    scan_checks = sum(
-        (len(edge.domain) - 1)
-        * len({edge.u, edge.v})
-        for edge in csp.edges.values()
-    )
+    if max_evaluations is not None and (not isinstance(max_evaluations, int) or max_evaluations < 0):
+        raise ValueError("max_evaluations must be a non-negative integer")
+    if timeout is not None and timeout < 0:
+        raise ValueError("timeout must be non-negative")
+
+    def limit():
+        check_cancel(cancel)
+        if timeout is not None and perf_counter() - start_time >= timeout:
+            return "TIME_LIMIT"
+        if max_evaluations is not None and stats.objective_evaluations >= max_evaluations:
+            return "EVALUATION_LIMIT"
+        return None
 
     def emit(kind, **payload):
         if on_event is not None:
@@ -890,6 +899,9 @@ def random_restart_hc(
             stats.best_h = best_h
             stats.solved = best_h == 0
             result = best.copy()
+
+        if stats.solved:
+            stats.stop_reason = "SOLVED"
 
         stats.runtime_ms = (
             perf_counter() - start_time
@@ -918,7 +930,10 @@ def random_restart_hc(
 
         for _ in range(budget):
 
-            check_cancel(cancel)
+            reason = limit()
+            if reason:
+                stats.stop_reason = reason
+                return finish()
 
             stats.initializations += 1
             stats.restarts = stats.initializations - 1
@@ -960,15 +975,31 @@ def random_restart_hc(
                 if h == 0:
                     return finish()
 
-                check_cancel(cancel)
-
-                move, evaluated = select_best_neighbor(
-                    csp, assignment, domains,
-                    violations, h, rng
-                )
-
-                stats.objective_evaluations += evaluated
-                stats.constraint_checks += scan_checks
+                moves = []
+                minimum = float("inf")
+                for edge_id, edge in csp.edges.items():
+                    for new_label in edge.domain:
+                        if new_label == assignment[edge_id]:
+                            continue
+                        reason = limit()
+                        if reason:
+                            stats.stop_reason = reason
+                            return finish()
+                        delta, updates = delta_h(csp, assignment, domains, violations, edge_id, new_label)
+                        stats.objective_evaluations += 1
+                        stats.constraint_checks += len(updates)
+                        candidate_h = h + delta
+                        if candidate_h < best_h:
+                            best = assignment.copy()
+                            best[edge_id] = new_label
+                            best_h = candidate_h
+                        candidate = (edge_id, new_label, delta, updates)
+                        if candidate_h < minimum:
+                            minimum = candidate_h
+                            moves = [candidate]
+                        elif candidate_h == minimum:
+                            moves.append(candidate)
+                move = rng.choice(moves) if moves else None
 
                 if move is None:
                     break
@@ -1037,6 +1068,7 @@ def random_restart_hc(
 
     except SearchCancelled:
         stats.cancelled = True
+        stats.stop_reason = "CANCELLED"
         return finish()
 
 
