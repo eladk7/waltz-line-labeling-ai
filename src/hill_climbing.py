@@ -575,3 +575,232 @@ if __name__ == "__main__":
     assert local_checks == 54
 
     print("\nAll delta h tests passed!")
+
+def select_best_neighbor(
+    csp, assignment, domains,
+    violations, current_h, rng
+):
+
+    best_h = float("inf")
+    best_moves = []
+    evaluated = 0
+
+    for edge_id, edge in csp.edges.items():
+
+        for new_label in edge.domain:
+
+            if new_label == assignment[edge_id]:
+                continue
+
+            delta, updates = delta_h(
+                csp, assignment, domains,
+                violations, edge_id, new_label
+            )
+
+            evaluated += 1
+
+            neighbor_h = current_h + delta
+
+            move = (
+                edge_id,
+                new_label,
+                delta,
+                updates
+            )
+
+            if neighbor_h < best_h:
+
+                best_h = neighbor_h
+                best_moves = [move]
+
+            elif neighbor_h == best_h:
+
+                best_moves.append(move)
+
+    if not best_moves:
+        return None, evaluated
+
+    return rng.choice(best_moves), evaluated
+
+
+if __name__ == "__main__":
+
+    csp = load_csp("instances/cube.json")
+    domains = build_domains(csp)
+
+    rng = random.Random(42)
+
+    assignment = random_assignment(csp, rng)
+
+    violations, h = initialize_state(
+        csp, assignment, domains
+    )
+
+    print("\nTEST 1 - Best neighbor selection")
+
+    move, evaluated = select_best_neighbor(
+        csp, assignment, domains,
+        violations, h, rng
+    )
+
+    edge_id, new_label, delta, updates = move
+
+    best_h = h + delta
+
+    print("Current h:", h)
+    print("Selected edge:", edge_id)
+    print("New label:", new_label)
+    print("Delta h:", delta)
+    print("Best neighbor h:", best_h)
+    print("Neighbors evaluated:", evaluated)
+
+    assert evaluated == 27
+
+    print("\nTEST 2 - Compare with full search")
+
+    neighbors = list(
+        generate_neighbors(csp, assignment)
+    )
+
+    expected_best_h = min(
+        objective(csp, neighbor)
+        for neighbor in neighbors
+    )
+
+    print("Incremental best h:", best_h)
+    print("Full search best h:", expected_best_h)
+
+    assert best_h == expected_best_h
+
+    print("\nTEST 3 - Original state preserved")
+
+    original = assignment.copy()
+    original_violations = violations.copy()
+
+    select_best_neighbor(
+        csp, assignment, domains,
+        violations, h, rng
+    )
+
+    assert assignment == original
+    assert violations == original_violations
+
+    print("Original assignment preserved")
+    print("Original violations preserved")
+
+    print("\nTEST 4 - Random tie-breaking")
+
+    optimal_moves = set()
+
+    for edge_id, edge in csp.edges.items():
+
+        for label in edge.domain:
+
+            if label == assignment[edge_id]:
+                continue
+
+            delta, updates = delta_h(
+                csp, assignment, domains,
+                violations, edge_id, label
+            )
+
+            if h + delta == expected_best_h:
+                optimal_moves.add((edge_id, label))
+
+    selected_moves = set()
+
+    for seed in range(1000):
+
+        move, evaluated = select_best_neighbor(
+            csp, assignment, domains,
+            violations, h, random.Random(seed)
+        )
+
+        edge_id, label, delta, updates = move
+
+        assert h + delta == expected_best_h
+
+        selected_moves.add((edge_id, label))
+
+    print("Optimal moves:", sorted(optimal_moves))
+    print("Selected moves:", sorted(selected_moves))
+    print("Random selections tested: 1000")
+
+    assert selected_moves == optimal_moves
+
+    print("\nTEST 5 - Fixed edges")
+
+    fixed_edges = list(csp.edges)[:6]
+
+    for edge_id in fixed_edges:
+
+        csp.edges[edge_id].domain = (
+            assignment[edge_id],
+        )
+
+    domains = build_domains(csp)
+
+    violations, h = initialize_state(
+        csp, assignment, domains
+    )
+
+    move, evaluated = select_best_neighbor(
+        csp, assignment, domains,
+        violations, h, rng
+    )
+
+    assert evaluated == 9
+    assert move[0] not in fixed_edges
+
+    print("Neighbors evaluated:", evaluated)
+    print("All fixed edges preserved")
+
+    print("\nTEST 6 - No available neighbors")
+
+    for edge_id in csp.edges:
+
+        csp.edges[edge_id].domain = (
+            assignment[edge_id],
+        )
+
+    domains = build_domains(csp)
+
+    violations, h = initialize_state(
+        csp, assignment, domains
+    )
+
+    move, evaluated = select_best_neighbor(
+        csp, assignment, domains,
+        violations, h, rng
+    )
+
+    assert move is None
+    assert evaluated == 0
+
+    print("Neighbors evaluated:", evaluated)
+    print("Selected move:", move)
+
+    print("\nTEST 7 - Reproducibility")
+
+    csp = load_csp("instances/cube.json")
+    domains = build_domains(csp)
+
+    violations, h = initialize_state(
+        csp, assignment, domains
+    )
+
+    result1 = select_best_neighbor(
+        csp, assignment, domains,
+        violations, h, random.Random(42)
+    )
+
+    result2 = select_best_neighbor(
+        csp, assignment, domains,
+        violations, h, random.Random(42)
+    )
+
+    assert result1 == result2
+
+    print("Same seed produces same selected move")
+
+    print("\nAll best neighbor tests passed!")
