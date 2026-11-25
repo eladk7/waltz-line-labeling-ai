@@ -1282,97 +1282,54 @@ if __name__ == "__main__":
     print("Sideways limit enforced")
     print("Worsening moves rejected")
 
+
     print("\nTEST 3 - Consecutive sideways limit")
 
-    from unittest.mock import patch
-
     csp = load_csp("instances/cube.json")
-
-    initial = random_assignment(
-        csp, random.Random(42)
-    )
-
-    calls = {"count": 0}
-
-    def fake_neighbor(
-        csp, assignment, domains,
-        violations, h, rng
-    ):
-        return ("e1", "-", 0, {}), 1
-
-    def fake_apply(
-        assignment, violations, h,
-        edge_id, new_label, delta, updates
-    ):
-        calls["count"] += 1
-        return h
+    reset_observed = False
 
     for S in [0, 1, 2, 5]:
+        sideways_observed = 0
 
-        calls["count"] = 0
-
-        with patch(
-            __name__ + ".random_assignment",
-            side_effect=lambda *args: initial.copy()
-        ), patch(
-            __name__ + ".select_best_neighbor",
-            side_effect=fake_neighbor
-        ), patch(
-            __name__ + ".apply_move",
-            side_effect=fake_apply
-        ):
+        for seed in range(30):
+            events = []
 
             random_restart_hc(
-                csp, budget=1, seed=42, S=S
+                csp, budget=10, seed=seed, S=S,
+                max_evaluations=10000,
+                timeout=2,
+                on_event=events.append
             )
 
-        assert calls["count"] == S
+            count = 0
 
-        print(
-            "S:", S,
-            "| Sideways moves:", calls["count"]
-        )
+            for event in events:
+                if event.get("kind", event.get("type")) in ("init", "restart"):
+                    count = 0
+
+                if event.get("kind", event.get("type")) != "move":
+                    continue
+
+                if event["payload"]["delta"] < 0:
+                    if count > 0:
+                        reset_observed = True
+                    count = 0
+                else:
+                    assert event["payload"]["delta"] == 0
+                    count += 1
+                    sideways_observed += 1
+
+                assert event["payload"]["sideways_count"] <= S
+                assert event["payload"]["sideways_count"] == count
+
+        if S > 0:
+            assert sideways_observed > 0
+
+        print(f"S={S}: PASS")
 
     print("\nTEST 4 - Counter reset after improvement")
-
-    calls["count"] = 0
-
-    deltas = iter([0, 0, -1, 0, 0, 0])
-
-    def sequence_neighbor(
-        csp, assignment, domains,
-        violations, h, rng
-    ):
-        delta = next(deltas)
-        return ("e1", "-", delta, {}), 1
-
-    def sequence_apply(
-        assignment, violations, h,
-        edge_id, new_label, delta, updates
-    ):
-        calls["count"] += 1
-        return h + delta
-
-    with patch(
-        __name__ + ".random_assignment",
-        side_effect=lambda *args: initial.copy()
-    ), patch(
-        __name__ + ".select_best_neighbor",
-        side_effect=sequence_neighbor
-    ), patch(
-        __name__ + ".apply_move",
-        side_effect=sequence_apply
-    ):
-
-        random_restart_hc(
-            csp, budget=1, seed=42, S=2
-        )
-
-    assert calls["count"] == 5
-
-    print("2 sideways + 1 improvement + 2 sideways")
-    print("Accepted moves:", calls["count"])
-    print("Counter correctly reset")
+    assert reset_observed
+    print("Counter reset verified")
 
     print("\nTEST 5 - Compare sideways configurations")
 
