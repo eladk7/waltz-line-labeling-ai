@@ -6,6 +6,7 @@ from src.validation import (
     validate_assignment,
     objective
 )
+from src.events import SearchCancelled, check_cancel, make_event
 
 
 def random_assignment(csp, rng):
@@ -815,15 +816,6 @@ def can_accept_move(delta, sideways_count, S):
 
 
 
-def can_accept_move(delta, sideways_count, S):
-
-    return (
-        delta < 0
-        or (delta == 0 and sideways_count < S)
-    )
-
-
-
 from dataclasses import dataclass, asdict
 from time import perf_counter
 
@@ -844,6 +836,7 @@ class HCStats:
 
     best_h: int = 0
     solved: bool = False
+    cancelled: bool = False
 
 
 def random_restart_hc(
@@ -851,7 +844,10 @@ def random_restart_hc(
     budget=100,
     seed=42,
     S=0,
-    return_stats=False
+    return_stats=False,
+    *,
+    on_event=None,
+    cancel=None,
 ):
 
     if not isinstance(budget, int) or budget <= 0:
@@ -880,90 +876,168 @@ def random_restart_hc(
         for edge in csp.edges.values()
     )
 
+    def emit(kind, **payload):
+        if on_event is not None:
+            on_event(make_event("hc", kind, **payload))
+
     def finish():
 
-        stats.best_h = best_h
-        stats.solved = best_h == 0
+        if best is None:
+            stats.best_h = None
+            stats.solved = False
+            result = None
+        else:
+            stats.best_h = best_h
+            stats.solved = best_h == 0
+            result = best.copy()
 
         stats.runtime_ms = (
             perf_counter() - start_time
         ) * 1000
 
+        if on_event is not None:
+            emit(
+                "done",
+                solved=stats.solved,
+                cancelled=stats.cancelled,
+                best_h=stats.best_h,
+                best=None if result is None else dict(result),
+                elapsed_ms=stats.runtime_ms,
+                objective_evaluations=stats.objective_evaluations,
+                steps=stats.steps,
+                restarts=stats.restarts,
+                sideways_steps=stats.sideways_steps,
+            )
+
         if return_stats:
-            return best.copy(), stats
+            return result, stats
 
-        return best.copy()
+        return result
 
-    for _ in range(budget):
+    try:
 
-        stats.initializations += 1
-        stats.restarts = stats.initializations - 1
+        for _ in range(budget):
 
-        assignment = random_assignment(csp, rng)
+            check_cancel(cancel)
 
-        violations, h = initialize_state(
-            csp, assignment, domains
-        )
+            stats.initializations += 1
+            stats.restarts = stats.initializations - 1
 
-        stats.objective_evaluations += 1
-        stats.constraint_checks += len(csp.junctions)
+            assignment = random_assignment(csp, rng)
 
-        sideways_count = 0
-
-        if h < best_h:
-            best = assignment.copy()
-            best_h = h
-
-        while True:
-
-            if h == 0:
-                return finish()
-
-            move, evaluated = select_best_neighbor(
-                csp, assignment, domains,
-                violations, h, rng
+            violations, h = initialize_state(
+                csp, assignment, domains
             )
 
-            stats.objective_evaluations += evaluated
-            stats.constraint_checks += scan_checks
+            stats.objective_evaluations += 1
+            stats.constraint_checks += len(csp.junctions)
 
-            if move is None:
-                break
-
-            edge_id, new_label, delta, updates = move
-
-            if not can_accept_move(
-                delta, sideways_count, S
-            ):
-                break
-
-            h = apply_move(
-                assignment,
-                violations,
-                h,
-                edge_id,
-                new_label,
-                delta,
-                updates
-            )
-
-            stats.steps += 1
-
-            if delta < 0:
-
-                sideways_count = 0
-                stats.improving_steps += 1
-
-            else:
-
-                sideways_count += 1
-                stats.sideways_steps += 1
+            sideways_count = 0
 
             if h < best_h:
                 best = assignment.copy()
                 best_h = h
 
-    return finish()
+            if on_event is not None:
+                emit(
+                    "restart",
+                    restarts=stats.restarts,
+                    initializations=stats.initializations,
+                    current=assignment.copy(),
+                    current_h=h,
+                    best=None if best is None else best.copy(),
+                    best_h=None if best is None else best_h,
+                    violations=dict(violations),
+                    steps=stats.steps,
+                    sideways_steps=stats.sideways_steps,
+                    sideways_count=sideways_count,
+                    elapsed_ms=(perf_counter() - start_time) * 1000,
+                    objective_evaluations=stats.objective_evaluations,
+                )
+
+            while True:
+
+                if h == 0:
+                    return finish()
+
+                check_cancel(cancel)
+
+                move, evaluated = select_best_neighbor(
+                    csp, assignment, domains,
+                    violations, h, rng
+                )
+
+                stats.objective_evaluations += evaluated
+                stats.constraint_checks += scan_checks
+
+                if move is None:
+                    break
+
+                edge_id, new_label, delta, updates = move
+
+                if not can_accept_move(
+                    delta, sideways_count, S
+                ):
+                    break
+
+                old_label = assignment[edge_id]
+                h_before = h
+
+                h = apply_move(
+                    assignment,
+                    violations,
+                    h,
+                    edge_id,
+                    new_label,
+                    delta,
+                    updates
+                )
+
+                stats.steps += 1
+
+                if delta < 0:
+
+                    sideways_count = 0
+                    stats.improving_steps += 1
+                    move_type = "improving"
+
+                else:
+
+                    sideways_count += 1
+                    stats.sideways_steps += 1
+                    move_type = "sideways"
+
+                if h < best_h:
+                    best = assignment.copy()
+                    best_h = h
+
+                if on_event is not None:
+                    emit(
+                        "move",
+                        edge_id=edge_id,
+                        old_label=old_label,
+                        new_label=new_label,
+                        h_before=h_before,
+                        h_after=h,
+                        delta=delta,
+                        move_type=move_type,
+                        steps=stats.steps,
+                        restarts=stats.restarts,
+                        sideways_steps=stats.sideways_steps,
+                        sideways_count=sideways_count,
+                        current=assignment.copy(),
+                        best=best.copy(),
+                        best_h=best_h,
+                        violations=dict(violations),
+                        elapsed_ms=(perf_counter() - start_time) * 1000,
+                        objective_evaluations=stats.objective_evaluations,
+                    )
+
+        return finish()
+
+    except SearchCancelled:
+        stats.cancelled = True
+        return finish()
 
 
 def print_hc_stats(stats):

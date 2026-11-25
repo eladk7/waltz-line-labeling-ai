@@ -44,12 +44,14 @@ def tournament_selection(population, rng):
 
 # Single-point crossover
 
-def crossover(parent1, parent2, p_c, rng):
+def crossover(parent1, parent2, p_c, rng, trace=None):
 
     if len(parent1) < 2 or rng.random() >= p_c:
         return parent1, parent2
 
     cut = rng.randint(1, len(parent1) - 1)
+    if trace is not None:
+        trace["cut"] = cut
 
     child1 = parent1[:cut] + parent2[cut:]
     child2 = parent2[:cut] + parent1[cut:]
@@ -123,7 +125,7 @@ def genetic_algorithm(
     p_m=0.02,
     max_evaluations=100000,
     timeout=10.0,
-    seed=42
+    seed=42, *, on_event=None, cancel=None
 ):
 
     if not isinstance(P, int) or P < 2:
@@ -148,7 +150,20 @@ def genetic_algorithm(
     best = None
     best_h = float("inf")
 
+    def emit(kind, **payload):
+        if on_event is not None:
+            on_event({"algorithm":"ga", "kind":kind, "payload":payload})
+
+    operations = []
+
+    def generation(pop):
+        if on_event is not None:
+            emit("generation", metrics=stats.history[-1], population=list(pop), operations=list(operations), best_assignment=decode(csp,best), best_h=best_h, elapsed_ms=(perf_counter()-start)*1000, objective_evaluations=stats.objective_evaluations)
+            operations.clear()
+
     def limit_reason():
+        if cancel is not None and cancel():
+            return "CANCELLED"
 
         if perf_counter() - start >= timeout:
             return "TIME_LIMIT"
@@ -174,6 +189,8 @@ def genetic_algorithm(
         if h < best_h:
             best = chromosome
             best_h = h
+            if on_event is not None:
+                emit("progress", best_assignment=decode(csp,best), best_h=h, elapsed_ms=(perf_counter()-start)*1000, objective_evaluations=stats.objective_evaluations)
 
         return chromosome, h
 
@@ -195,6 +212,7 @@ def genetic_algorithm(
             else decode(csp, best)
         )
 
+        emit("done", solved=stats.solved, stop_reason=reason, best_assignment=solution, best_h=stats.best_h, elapsed_ms=stats.runtime_ms, objective_evaluations=stats.objective_evaluations)
         return solution, stats
 
     # Initial population
@@ -218,11 +236,15 @@ def genetic_algorithm(
                     generation_metrics(population, 0)
                 )
 
+            if len(population) == P:
+                generation(population)
             return finish("SOLVED")
 
     stats.history.append(
         generation_metrics(population, 0)
     )
+
+    generation(population)
 
     # Generational evolution
 
@@ -257,9 +279,8 @@ def genetic_algorithm(
                 population, rng
             )
 
-            children = crossover(
-                parent1, parent2, p_c, rng
-            )
+            trace = {"cut": None} if on_event is not None else None
+            children = crossover(parent1, parent2, p_c, rng, trace)
 
             for child in children:
 
@@ -271,9 +292,10 @@ def genetic_algorithm(
                 if reason:
                     return finish(reason)
 
-                child = mutate(
-                    csp, child, p_m, rng
-                )
+                before = child
+                child = mutate(csp, child, p_m, rng)
+                if on_event is not None:
+                    operations.append({"parents": (parent1,parent2), "cut": trace["cut"], "mutated": [e for e,a,b in zip(edge_order(csp),before,child) if a!=b], "child":child})
 
                 individual = evaluate(child)
 
@@ -292,6 +314,8 @@ def genetic_algorithm(
                             )
                         )
 
+                    if len(new_population) == P:
+                        generation(new_population)
                     return finish("SOLVED")
 
         population = new_population
@@ -304,6 +328,8 @@ def genetic_algorithm(
                 stats.generations
             )
         )
+
+        generation(population)
 
 
 def print_stats(stats):

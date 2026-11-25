@@ -5,6 +5,13 @@ from src.loader import load_csp
 from src.domains import build_domains, print_domains
 from src.arcs import build_arcs
 from src.revise import revise
+from src.events import (
+    arc_to_dict,
+    check_cancel,
+    copy_domains,
+    make_event,
+    tuple_difference,
+)
 
 
 @dataclass
@@ -15,7 +22,15 @@ class AC3Stats:
     max_queue_size: int = 0
 
 
-def ac3(domains, arcs, initial_queue=None, verbose=False):
+def ac3(
+    domains,
+    arcs,
+    initial_queue=None,
+    verbose=False,
+    *,
+    on_event=None,
+    cancel=None,
+):
 
     stats = AC3Stats()
 
@@ -25,14 +40,33 @@ def ac3(domains, arcs, initial_queue=None, verbose=False):
 
     stats.max_queue_size = len(queue)
 
+    def emit(kind, **payload):
+        if on_event is not None:
+            on_event(make_event("ac3", kind, **payload))
+
+    if on_event is not None:
+        emit(
+            "queue",
+            queue=[arc_to_dict(arc) for arc in queue],
+            domains=copy_domains(domains),
+        )
+
     if any(not domain for domain in domains.values()):
         return False, stats
 
     while queue:
 
+        check_cancel(cancel)
+
         arc = queue.popleft()
 
         stats.revise_calls += 1
+
+        before = (
+            list(domains[arc.source])
+            if on_event is not None
+            else None
+        )
 
         removed = revise(domains, arc, stats)
 
@@ -48,6 +82,18 @@ def ac3(domains, arcs, initial_queue=None, verbose=False):
                 )
 
             if not domains[arc.source]:
+                if on_event is not None:
+                    emit(
+                        "revise",
+                        arc=arc_to_dict(arc),
+                        removed=removed,
+                        removed_tuples=tuple_difference(
+                            before, domains[arc.source]
+                        ),
+                        queue=[arc_to_dict(item) for item in queue],
+                        domains=copy_domains(domains),
+                        emptied=True,
+                    )
                 return False, stats
 
             for neighbor_arc in arcs:
@@ -62,6 +108,19 @@ def ac3(domains, arcs, initial_queue=None, verbose=False):
             stats.max_queue_size = max(
                 stats.max_queue_size,
                 len(queue)
+            )
+
+        if on_event is not None:
+            emit(
+                "revise",
+                arc=arc_to_dict(arc),
+                removed=removed,
+                removed_tuples=tuple_difference(
+                    before, domains[arc.source]
+                ),
+                queue=[arc_to_dict(item) for item in queue],
+                domains=copy_domains(domains),
+                emptied=not domains[arc.source],
             )
 
     return True, stats

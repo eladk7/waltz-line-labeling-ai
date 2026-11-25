@@ -5,6 +5,12 @@ from src.loader import load_csp
 from src.domains import build_domains
 from src.arcs import Arc, build_arcs
 from src.ac3 import ac3
+from src.events import (
+    SearchCancelled,
+    check_cancel,
+    copy_domains,
+    make_event,
+)
 
 
 @dataclass
@@ -20,6 +26,7 @@ class WaltzStats:
     decided_by_propagation: bool = False
     status: str = "UNSAT"
     runtime_ms: float = 0.0
+    cancelled: bool = False
 
 
 def update_stats(stats, ac3_stats):
@@ -49,7 +56,17 @@ def select_mrv(domains):
     )
 
 
-def waltz_search(domains, arcs, stats):
+def waltz_search(
+    domains,
+    arcs,
+    stats,
+    *,
+    on_event=None,
+    cancel=None,
+    _depth=0,
+):
+
+    check_cancel(cancel)
 
     stats.search_nodes += 1
 
@@ -61,7 +78,19 @@ def waltz_search(domains, arcs, stats):
 
     junction_id = select_mrv(domains)
 
+    if on_event is not None:
+        on_event(make_event(
+            "waltz",
+            "mrv",
+            junction=junction_id,
+            domain_size=len(domains[junction_id]),
+            depth=_depth,
+            domain=list(domains[junction_id]),
+        ))
+
     for candidate in domains[junction_id]:
+
+        check_cancel(cancel)
 
         stats.decisions += 1
 
@@ -72,6 +101,16 @@ def waltz_search(domains, arcs, stats):
 
         new_domains[junction_id] = [candidate]
 
+        if on_event is not None:
+            on_event(make_event(
+                "waltz",
+                "decision",
+                junction=junction_id,
+                candidate=candidate,
+                depth=_depth,
+                domains=copy_domains(new_domains),
+            ))
+
         affected_arcs = [
             arc for arc in arcs
             if arc.target == junction_id
@@ -80,20 +119,36 @@ def waltz_search(domains, arcs, stats):
         success, ac3_stats = ac3(
             new_domains,
             arcs,
-            initial_queue=affected_arcs
+            initial_queue=affected_arcs,
+            on_event=on_event,
+            cancel=cancel,
         )
 
         update_stats(stats, ac3_stats)
 
         if success:
             result = waltz_search(
-                new_domains, arcs, stats
+                new_domains,
+                arcs,
+                stats,
+                on_event=on_event,
+                cancel=cancel,
+                _depth=_depth + 1,
             )
 
             if result is not None:
                 return result
 
         stats.backtracks += 1
+
+        if on_event is not None:
+            on_event(make_event(
+                "waltz",
+                "backtrack",
+                junction=junction_id,
+                candidate=candidate,
+                depth=_depth,
+            ))
 
     return None
 
@@ -122,43 +177,109 @@ def extract_solution(csp, domains):
     return solution
 
 
-def waltz(csp):
+def waltz(csp, *, on_event=None, cancel=None):
 
     start = perf_counter()
     stats = WaltzStats()
 
-    domains = build_domains(csp)
-    arcs = build_arcs(csp)
+    def emit(kind, **payload):
+        if on_event is not None:
+            on_event(make_event("waltz", kind, **payload))
 
-    success, ac3_stats = ac3(domains, arcs)
+    def relay(event):
+        if event.get("algorithm") == "ac3":
+            event["algorithm"] = "waltz"
+        on_event(event)
 
-    update_stats(stats, ac3_stats)
+    callback = relay if on_event is not None else None
 
-    solution = None
+    try:
+        check_cancel(cancel)
 
-    if not success:
-        stats.decided_by_propagation = True
+        domains = build_domains(csp)
+        arcs = build_arcs(csp)
 
-    if success:
-
-        if all(len(d) == 1 for d in domains.values()):
-            stats.solved_by_propagation = True
-            stats.decided_by_propagation = True
-
-        result = waltz_search(
-            domains, arcs, stats
+        emit(
+            "domains",
+            domains=copy_domains(domains),
+            phase="initial",
         )
 
-        if result is not None:
-            solution = extract_solution(csp, result)
+        success, ac3_stats = ac3(
+            domains,
+            arcs,
+            on_event=callback,
+            cancel=cancel,
+        )
 
-    stats.status = "SOLVED" if solution is not None else "UNSAT"
+        update_stats(stats, ac3_stats)
 
-    stats.runtime_ms = (
-        perf_counter() - start
-    ) * 1000
+        solution = None
 
-    return solution, stats
+        if not success:
+            stats.decided_by_propagation = True
+
+        if success:
+
+            if all(len(d) == 1 for d in domains.values()):
+                stats.solved_by_propagation = True
+                stats.decided_by_propagation = True
+
+            result = waltz_search(
+                domains,
+                arcs,
+                stats,
+                on_event=callback,
+                cancel=cancel,
+            )
+
+            if result is not None:
+                solution = extract_solution(csp, result)
+
+        stats.status = "SOLVED" if solution is not None else "UNSAT"
+
+        stats.runtime_ms = (
+            perf_counter() - start
+        ) * 1000
+
+        emit(
+            "result",
+            solved=solution is not None,
+            solution=None if solution is None else dict(solution),
+            status=stats.status,
+            best_h=0 if solution is not None else None,
+            elapsed_ms=stats.runtime_ms,
+            objective_evaluations=0,
+            constraint_checks=stats.constraint_checks,
+            search_nodes=stats.search_nodes,
+            decisions=stats.decisions,
+            backtracks=stats.backtracks,
+            solved_by_propagation=stats.solved_by_propagation,
+        )
+
+        return solution, stats
+
+    except SearchCancelled:
+        stats.cancelled = True
+        stats.status = "CANCELLED"
+        stats.runtime_ms = (perf_counter() - start) * 1000
+
+        emit(
+            "result",
+            solved=False,
+            solution=None,
+            status="CANCELLED",
+            best_h=None,
+            elapsed_ms=stats.runtime_ms,
+            objective_evaluations=0,
+            constraint_checks=stats.constraint_checks,
+            search_nodes=stats.search_nodes,
+            decisions=stats.decisions,
+            backtracks=stats.backtracks,
+            solved_by_propagation=False,
+        )
+
+        return None, stats
 
 
 def print_result(solution, stats):
