@@ -804,3 +804,238 @@ if __name__ == "__main__":
     print("Same seed produces same selected move")
 
     print("\nAll best neighbor tests passed!")
+
+def random_restart_hc(csp, budget=100, seed=42):
+
+    if budget <= 0:
+        raise ValueError("Budget must be positive")
+
+    rng = random.Random(seed)
+    domains = build_domains(csp)
+
+    best = None
+    best_h = float("inf")
+
+    for _ in range(budget):
+
+        assignment = random_assignment(csp, rng)
+
+        violations, h = initialize_state(
+            csp, assignment, domains
+        )
+
+        if h < best_h:
+            best = assignment.copy()
+            best_h = h
+
+        while True:
+
+            # Check whether the current state is a solution
+            if h == 0:
+                return assignment.copy()
+
+            # Evaluate all neighbors
+            move, evaluated = select_best_neighbor(
+                csp,
+                assignment,
+                domains,
+                violations,
+                h,
+                rng
+            )
+
+            # No available neighbors
+            if move is None:
+                break
+
+            edge_id, new_label, delta, updates = move
+
+            # Local minimum or plateau
+            if delta >= 0:
+                break
+
+            # Move to a strictly improving neighbor
+            h = apply_move(
+                assignment,
+                violations,
+                h,
+                edge_id,
+                new_label,
+                delta,
+                updates
+            )
+
+            # Preserve the best assignment found
+            if h < best_h:
+                best = assignment.copy()
+                best_h = h
+
+    # Budget exhausted: return the best assignment
+    return best
+
+
+if __name__ == "__main__":
+
+    print("\nTEST 1 - Random restart hill climbing")
+
+    csp = load_csp("instances/cube.json")
+
+    result = random_restart_hc(
+        csp, budget=100, seed=42
+    )
+
+    result_h = objective(csp, result)
+
+    print("Best assignment:", result)
+    print("Best h:", result_h)
+    print("Solution found:", result_h == 0)
+
+    assert result_h == 0
+
+    print("\nTEST 2 - Compare with Waltz")
+
+    solution, stats = waltz(csp)
+
+    assert solution is not None
+    assert objective(csp, solution) == 0
+    assert objective(csp, result) == 0
+
+    print("Waltz h:", objective(csp, solution))
+    print("Hill climbing h:", result_h)
+
+    print("\nTEST 3 - Reproducibility")
+
+    result1 = random_restart_hc(
+        csp, budget=100, seed=42
+    )
+
+    result2 = random_restart_hc(
+        csp, budget=100, seed=42
+    )
+
+    assert result1 == result2
+
+    print("Same seed produces same result")
+
+    print("\nTEST 4 - Fixed edges")
+
+    csp = load_csp("instances/cube.json")
+
+    fixed_edges = [
+        "e1", "e2", "e3",
+        "e4", "e5", "e6"
+    ]
+
+    for edge_id in fixed_edges:
+        csp.edges[edge_id].domain = ("R",)
+
+    result = random_restart_hc(
+        csp, budget=100, seed=42
+    )
+
+    for edge_id in fixed_edges:
+        assert result[edge_id] == "R"
+
+    print("All fixed edges preserved")
+    print("Best h:", objective(csp, result))
+
+    assert objective(csp, result) == 0
+
+    print("\nTEST 5 - Already solved initial state")
+
+    csp = load_csp("instances/cube.json")
+
+    solution, stats = waltz(csp)
+
+    for edge_id, label in solution.items():
+        csp.edges[edge_id].domain = (label,)
+
+    result = random_restart_hc(
+        csp, budget=1, seed=42
+    )
+
+    assert result == solution
+    assert objective(csp, result) == 0
+
+    print("Initial assignment is a solution")
+    print("Best h:", objective(csp, result))
+
+    print("\nTEST 6 - Unsatisfiable instance")
+
+    csp = load_csp("instances/cube.json")
+
+    csp.edges["e7"].domain = ("-",)
+
+    result = random_restart_hc(
+        csp, budget=100, seed=42
+    )
+
+    result_h = objective(csp, result)
+
+    assert result is not None
+    assert result["e7"] == "-"
+    assert result_h > 0
+
+    print("Best assignment:", result)
+    print("Best h:", result_h)
+    print("Solution found:", result_h == 0)
+    print("Budget exhausted - not a proof of UNSAT")
+
+    print("\nTEST 7 - All edges fixed, no solution")
+
+    csp = load_csp("instances/cube.json")
+
+    for edge in csp.edges.values():
+        edge.domain = ("+",)
+
+    result = random_restart_hc(
+        csp, budget=10, seed=42
+    )
+
+    assert result is not None
+    assert objective(csp, result) == 6
+
+    print("Available neighbors:", count_neighbors(csp))
+    print("Best h:", objective(csp, result))
+    print("Best assignment returned")
+
+    print("\nTEST 8 - Budget comparison")
+
+    csp = load_csp("instances/cube.json")
+
+    previous_h = float("inf")
+
+    for budget in [1, 5, 10, 50, 100]:
+
+        result = random_restart_hc(
+            csp, budget=budget, seed=42
+        )
+
+        result_h = objective(csp, result)
+
+        print(
+            "Budget:", budget,
+            "| Best h:", result_h
+        )
+
+        assert result_h <= previous_h
+
+        previous_h = result_h
+
+    print("\nTEST 9 - Invalid budget")
+
+    try:
+
+        random_restart_hc(
+            csp, budget=0, seed=42
+        )
+
+    except ValueError:
+        print("Invalid budget correctly rejected")
+
+    else:
+        raise AssertionError(
+            "Invalid budget was accepted"
+        )
+
+    print("\nAll random restart HC tests passed!")
