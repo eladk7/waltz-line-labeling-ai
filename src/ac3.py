@@ -1,4 +1,4 @@
-﻿from collections import deque
+from collections import deque
 from dataclasses import dataclass
 
 from src.loader import load_csp
@@ -10,6 +10,7 @@ from src.revise import revise
 @dataclass
 class AC3Stats:
     revise_calls: int = 0
+    constraint_checks: int = 0
     removed_tuples: int = 0
     max_queue_size: int = 0
 
@@ -33,7 +34,7 @@ def ac3(domains, arcs, initial_queue=None, verbose=False):
 
         stats.revise_calls += 1
 
-        removed = revise(domains, arc)
+        removed = revise(domains, arc, stats)
 
         stats.removed_tuples += removed
 
@@ -69,6 +70,7 @@ def ac3(domains, arcs, initial_queue=None, verbose=False):
 def print_stats(stats):
 
     print("REVISE calls:", stats.revise_calls)
+    print("Constraint checks:", stats.constraint_checks)
     print("Removed tuples:", stats.removed_tuples)
     print("Max queue size:", stats.max_queue_size)
 

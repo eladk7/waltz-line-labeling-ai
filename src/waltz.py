@@ -1,4 +1,4 @@
-﻿from dataclasses import dataclass
+from dataclasses import dataclass
 from time import perf_counter
 
 from src.loader import load_csp
@@ -13,14 +13,18 @@ class WaltzStats:
     decisions: int = 0
     backtracks: int = 0
     revise_calls: int = 0
+    constraint_checks: int = 0
     removed_tuples: int = 0
     max_queue_size: int = 0
     solved_by_propagation: bool = False
+    decided_by_propagation: bool = False
+    status: str = "UNSAT"
     runtime_ms: float = 0.0
 
 
 def update_stats(stats, ac3_stats):
     stats.revise_calls += ac3_stats.revise_calls
+    stats.constraint_checks += ac3_stats.constraint_checks
     stats.removed_tuples += ac3_stats.removed_tuples
 
     stats.max_queue_size = max(
@@ -132,10 +136,14 @@ def waltz(csp):
 
     solution = None
 
+    if not success:
+        stats.decided_by_propagation = True
+
     if success:
 
         if all(len(d) == 1 for d in domains.values()):
             stats.solved_by_propagation = True
+            stats.decided_by_propagation = True
 
         result = waltz_search(
             domains, arcs, stats
@@ -143,6 +151,8 @@ def waltz(csp):
 
         if result is not None:
             solution = extract_solution(csp, result)
+
+    stats.status = "SOLVED" if solution is not None else "UNSAT"
 
     stats.runtime_ms = (
         perf_counter() - start
@@ -162,6 +172,9 @@ def print_result(solution, stats):
     print("Decisions:", stats.decisions)
     print("Backtracks:", stats.backtracks)
     print("REVISE calls:", stats.revise_calls)
+    print("Constraint checks:", stats.constraint_checks)
+    print("Status:", stats.status)
+    print("Decided by propagation:", stats.decided_by_propagation)
     print("Removed tuples:", stats.removed_tuples)
     print("Max queue size:", stats.max_queue_size)
     print(

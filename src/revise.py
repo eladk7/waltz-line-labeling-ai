@@ -4,7 +4,7 @@ from src.domains import build_domains
 from src.arcs import build_arcs
 
 
-def revise(domains, arc):
+def revise(domains, arc, stats=None):
     source_domain = domains[arc.source]
     target_domain = domains[arc.target]
 
@@ -12,12 +12,19 @@ def revise(domains, arc):
 
     for source_tuple in source_domain:
 
-        supported = any(
-            source_tuple[arc.source_index]
-            == target_tuple[arc.target_index]
+        supported = False
 
-            for target_tuple in target_domain
-        )
+        for target_tuple in target_domain:
+
+            if stats is not None:
+                stats.constraint_checks += 1
+
+            if (
+                source_tuple[arc.source_index]
+                == target_tuple[arc.target_index]
+            ):
+                supported = True
+                break
 
         if supported:
             remaining.append(source_tuple)
