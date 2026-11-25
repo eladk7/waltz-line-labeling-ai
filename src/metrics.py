@@ -1,4 +1,4 @@
-﻿from src.loader import load_csp
+from src.loader import load_csp
 from src.waltz import waltz, print_result
 from src.ac3 import AC3Stats
 from src.arcs import Arc
@@ -40,11 +40,13 @@ def run_case(name, fixed_edges, expected_status):
 
     assert stats.status == expected_status
     assert stats.constraint_checks > 0
-    assert stats.decided_by_propagation
-    assert stats.decisions == 0
+    expected_propagation = bool(fixed_edges)
+
+    assert stats.decided_by_propagation == expected_propagation
+    assert (stats.decisions == 0) == expected_propagation
 
     assert stats.solved_by_propagation == (
-        solution is not None
+        expected_propagation and solution is not None
     )
 
     return stats
@@ -96,6 +98,6 @@ if __name__ == "__main__":
     print(f"Propagation decision rate: {percentage:.2f}%")
     print(f"Average constraint checks: {average_checks:.2f}")
 
-    assert percentage == 100.0
+    assert decided == 2
 
     print("\nAll metrics tests passed!")

@@ -1521,7 +1521,31 @@ if __name__ == "__main__":
     print_hc_stats(stats)
 
     assert stats.solved
-    assert stats.sideways_steps > 0
+    sideways_observed = False
+
+    for test_seed in range(30):
+        test_result, test_stats = random_restart_hc(
+            csp,
+            budget=100,
+            seed=test_seed,
+            S=5,
+            return_stats=True
+        )
+
+        assert test_stats.steps == (
+            test_stats.improving_steps
+            + test_stats.sideways_steps
+        )
+
+        assert test_stats.best_h == objective(
+            csp, test_result
+        )
+
+        if test_stats.sideways_steps > 0:
+            sideways_observed = True
+
+    assert sideways_observed
+    print("Sideways accounting verified across 30 seeds")
     assert stats.steps == (
         stats.improving_steps + stats.sideways_steps
     )

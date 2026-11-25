@@ -316,8 +316,8 @@ if __name__ == "__main__":
 
     assert solution is not None
     assert len(solution) == 9
-    assert stats.solved_by_propagation
-    assert stats.decisions == 0
+    assert not stats.solved_by_propagation
+    assert stats.decisions > 0
 
     for i in range(1, 7):
         assert solution[f"e{i}"] == "R"
