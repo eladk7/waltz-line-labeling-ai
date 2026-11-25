@@ -823,13 +823,49 @@ def can_accept_move(delta, sideways_count, S):
     )
 
 
-def random_restart_hc(csp, budget=100, seed=42, S=0):
+
+from dataclasses import dataclass, asdict
+from time import perf_counter
+
+
+@dataclass
+class HCStats:
+
+    runtime_ms: float = 0.0
+    objective_evaluations: int = 0
+    constraint_checks: int = 0
+
+    initializations: int = 0
+    restarts: int = 0
+
+    steps: int = 0
+    improving_steps: int = 0
+    sideways_steps: int = 0
+
+    best_h: int = 0
+    solved: bool = False
+
+
+def random_restart_hc(
+    csp,
+    budget=100,
+    seed=42,
+    S=0,
+    return_stats=False
+):
 
     if not isinstance(budget, int) or budget <= 0:
-        raise ValueError("Budget must be a positive integer")
+        raise ValueError(
+            "Budget must be a positive integer"
+        )
 
     if not isinstance(S, int) or S < 0:
-        raise ValueError("S must be a non-negative integer")
+        raise ValueError(
+            "S must be a non-negative integer"
+        )
+
+    start_time = perf_counter()
+    stats = HCStats()
 
     rng = random.Random(seed)
     domains = build_domains(csp)
@@ -837,13 +873,40 @@ def random_restart_hc(csp, budget=100, seed=42, S=0):
     best = None
     best_h = float("inf")
 
+    # Number of junction checks in a full neighborhood scan
+    scan_checks = sum(
+        (len(edge.domain) - 1)
+        * len({edge.u, edge.v})
+        for edge in csp.edges.values()
+    )
+
+    def finish():
+
+        stats.best_h = best_h
+        stats.solved = best_h == 0
+
+        stats.runtime_ms = (
+            perf_counter() - start_time
+        ) * 1000
+
+        if return_stats:
+            return best.copy(), stats
+
+        return best.copy()
+
     for _ in range(budget):
+
+        stats.initializations += 1
+        stats.restarts = stats.initializations - 1
 
         assignment = random_assignment(csp, rng)
 
         violations, h = initialize_state(
             csp, assignment, domains
         )
+
+        stats.objective_evaluations += 1
+        stats.constraint_checks += len(csp.junctions)
 
         sideways_count = 0
 
@@ -854,12 +917,15 @@ def random_restart_hc(csp, budget=100, seed=42, S=0):
         while True:
 
             if h == 0:
-                return assignment.copy()
+                return finish()
 
             move, evaluated = select_best_neighbor(
                 csp, assignment, domains,
                 violations, h, rng
             )
+
+            stats.objective_evaluations += evaluated
+            stats.constraint_checks += scan_checks
 
             if move is None:
                 break
@@ -881,16 +947,33 @@ def random_restart_hc(csp, budget=100, seed=42, S=0):
                 updates
             )
 
+            stats.steps += 1
+
             if delta < 0:
+
                 sideways_count = 0
+                stats.improving_steps += 1
+
             else:
+
                 sideways_count += 1
+                stats.sideways_steps += 1
 
             if h < best_h:
                 best = assignment.copy()
                 best_h = h
 
-    return best
+    return finish()
+
+
+def print_hc_stats(stats):
+
+    for name, value in asdict(stats).items():
+
+        if isinstance(value, float):
+            print(f"{name}: {value:.3f}")
+        else:
+            print(f"{name}: {value}")
 
 
 if __name__ == "__main__":
@@ -1257,3 +1340,204 @@ if __name__ == "__main__":
 
     print("\nAll sideways move tests passed!")
 
+
+if __name__ == "__main__":
+
+    print("\nTEST 1 - Complete metrics")
+
+    csp = load_csp("instances/cube.json")
+
+    result, stats = random_restart_hc(
+        csp,
+        budget=100,
+        seed=42,
+        S=0,
+        return_stats=True
+    )
+
+    print_hc_stats(stats)
+
+    assert stats.solved
+    assert stats.best_h == 0
+    assert stats.best_h == objective(csp, result)
+    assert stats.runtime_ms >= 0
+    assert stats.initializations <= 100
+    assert stats.restarts == stats.initializations - 1
+    assert stats.sideways_steps == 0
+    assert stats.steps == stats.improving_steps
+
+    print("\nTEST 2 - Exact constraint accounting")
+
+    neighbor_evaluations = (
+        stats.objective_evaluations
+        - stats.initializations
+    )
+
+    expected_checks = (
+        stats.initializations * len(csp.junctions)
+        + neighbor_evaluations * 2
+    )
+
+    print("Neighbor evaluations:", neighbor_evaluations)
+    print("Expected checks:", expected_checks)
+    print("Actual checks:", stats.constraint_checks)
+
+    assert stats.constraint_checks == expected_checks
+
+    print("\nTEST 3 - Already solved initial state")
+
+    csp = load_csp("instances/cube.json")
+    solution, _ = waltz(csp)
+
+    for edge_id, label in solution.items():
+        csp.edges[edge_id].domain = (label,)
+
+    result, stats = random_restart_hc(
+        csp,
+        budget=100,
+        seed=42,
+        return_stats=True
+    )
+
+    print_hc_stats(stats)
+
+    assert stats.solved
+    assert stats.initializations == 1
+    assert stats.restarts == 0
+    assert stats.steps == 0
+    assert stats.objective_evaluations == 1
+    assert stats.constraint_checks == 7
+
+    print("\nTEST 4 - No available neighbors")
+
+    csp = load_csp("instances/cube.json")
+
+    for edge in csp.edges.values():
+        edge.domain = ("+",)
+
+    result, stats = random_restart_hc(
+        csp,
+        budget=10,
+        seed=42,
+        return_stats=True
+    )
+
+    print_hc_stats(stats)
+
+    assert not stats.solved
+    assert stats.best_h == 6
+    assert stats.initializations == 10
+    assert stats.restarts == 9
+    assert stats.steps == 0
+    assert stats.objective_evaluations == 10
+    assert stats.constraint_checks == 70
+
+    print("\nTEST 5 - Sideways step accounting")
+
+    csp = load_csp("instances/cube.json")
+
+    result, stats = random_restart_hc(
+        csp,
+        budget=100,
+        seed=42,
+        S=5,
+        return_stats=True
+    )
+
+    print_hc_stats(stats)
+
+    assert stats.solved
+    assert stats.sideways_steps > 0
+    assert stats.steps == (
+        stats.improving_steps + stats.sideways_steps
+    )
+
+    assert stats.best_h == objective(csp, result)
+
+    print("\nTEST 6 - Budget exhausted")
+
+    csp = load_csp("instances/cube.json")
+    csp.edges["e7"].domain = ("-",)
+
+    result, stats = random_restart_hc(
+        csp,
+        budget=10,
+        seed=42,
+        S=5,
+        return_stats=True
+    )
+
+    print_hc_stats(stats)
+
+    assert not stats.solved
+    assert stats.best_h > 0
+    assert stats.initializations == 10
+    assert stats.restarts == 9
+    assert stats.best_h == objective(csp, result)
+
+    print("\nTEST 7 - Backward compatibility")
+
+    csp = load_csp("instances/cube.json")
+
+    old_result = random_restart_hc(
+        csp, budget=100, seed=42, S=5
+    )
+
+    new_result, stats = random_restart_hc(
+        csp, budget=100, seed=42,
+        S=5, return_stats=True
+    )
+
+    assert old_result == new_result
+
+    print("Previous interface preserved")
+
+    print("\nTEST 8 - Compare configurations with metrics")
+
+    from statistics import mean
+
+    csp = load_csp("instances/cube.json")
+
+    for S in [0, 1, 5, 10, 20]:
+
+        runs = []
+
+        for seed in range(30):
+
+            result, stats = random_restart_hc(
+                csp,
+                budget=10,
+                seed=seed,
+                S=S,
+                return_stats=True
+            )
+
+            assert stats.best_h == objective(csp, result)
+
+            runs.append(stats)
+
+        solved = sum(r.solved for r in runs)
+
+        print(f"\nS = {S}")
+        print(f"Solved: {solved}/30")
+        print(f"Success: {100 * solved / 30:.2f}%")
+
+        for metric in [
+            "runtime_ms",
+            "objective_evaluations",
+            "constraint_checks",
+            "steps",
+            "improving_steps",
+            "sideways_steps",
+            "initializations",
+            "restarts",
+            "best_h"
+        ]:
+
+            average = mean(
+                getattr(r, metric) for r in runs
+            )
+
+            print(f"Average {metric}: {average:.3f}")
+
+    print("\nAll hill climbing metrics tests passed!")
