@@ -1,4 +1,4 @@
-﻿import random
+import random
 
 from src.loader import load_csp
 from src.domains import build_domains
@@ -805,10 +805,31 @@ if __name__ == "__main__":
 
     print("\nAll best neighbor tests passed!")
 
-def random_restart_hc(csp, budget=100, seed=42):
 
-    if budget <= 0:
-        raise ValueError("Budget must be positive")
+def can_accept_move(delta, sideways_count, S):
+
+    return (
+        delta < 0
+        or (delta == 0 and sideways_count < S)
+    )
+
+
+
+def can_accept_move(delta, sideways_count, S):
+
+    return (
+        delta < 0
+        or (delta == 0 and sideways_count < S)
+    )
+
+
+def random_restart_hc(csp, budget=100, seed=42, S=0):
+
+    if not isinstance(budget, int) or budget <= 0:
+        raise ValueError("Budget must be a positive integer")
+
+    if not isinstance(S, int) or S < 0:
+        raise ValueError("S must be a non-negative integer")
 
     rng = random.Random(seed)
     domains = build_domains(csp)
@@ -824,37 +845,32 @@ def random_restart_hc(csp, budget=100, seed=42):
             csp, assignment, domains
         )
 
+        sideways_count = 0
+
         if h < best_h:
             best = assignment.copy()
             best_h = h
 
         while True:
 
-            # Check whether the current state is a solution
             if h == 0:
                 return assignment.copy()
 
-            # Evaluate all neighbors
             move, evaluated = select_best_neighbor(
-                csp,
-                assignment,
-                domains,
-                violations,
-                h,
-                rng
+                csp, assignment, domains,
+                violations, h, rng
             )
 
-            # No available neighbors
             if move is None:
                 break
 
             edge_id, new_label, delta, updates = move
 
-            # Local minimum or plateau
-            if delta >= 0:
+            if not can_accept_move(
+                delta, sideways_count, S
+            ):
                 break
 
-            # Move to a strictly improving neighbor
             h = apply_move(
                 assignment,
                 violations,
@@ -865,12 +881,15 @@ def random_restart_hc(csp, budget=100, seed=42):
                 updates
             )
 
-            # Preserve the best assignment found
+            if delta < 0:
+                sideways_count = 0
+            else:
+                sideways_count += 1
+
             if h < best_h:
                 best = assignment.copy()
                 best_h = h
 
-    # Budget exhausted: return the best assignment
     return best
 
 
@@ -1039,3 +1058,202 @@ if __name__ == "__main__":
         )
 
     print("\nAll random restart HC tests passed!")
+
+if __name__ == "__main__":
+
+    print("\nTEST 1 - Default S equals zero")
+
+    csp = load_csp("instances/cube.json")
+
+    default_result = random_restart_hc(
+        csp, budget=100, seed=42
+    )
+
+    explicit_result = random_restart_hc(
+        csp, budget=100, seed=42, S=0
+    )
+
+    assert default_result == explicit_result
+
+    print("Default behavior preserved")
+
+    print("\nTEST 2 - Move acceptance rules")
+
+    assert can_accept_move(-1, 0, 0)
+    assert can_accept_move(-2, 10, 10)
+
+    assert not can_accept_move(0, 0, 0)
+    assert can_accept_move(0, 0, 2)
+    assert can_accept_move(0, 1, 2)
+    assert not can_accept_move(0, 2, 2)
+
+    assert not can_accept_move(1, 0, 10)
+
+    print("Improving moves accepted")
+    print("Sideways limit enforced")
+    print("Worsening moves rejected")
+
+    print("\nTEST 3 - Consecutive sideways limit")
+
+    from unittest.mock import patch
+
+    csp = load_csp("instances/cube.json")
+
+    initial = random_assignment(
+        csp, random.Random(42)
+    )
+
+    calls = {"count": 0}
+
+    def fake_neighbor(
+        csp, assignment, domains,
+        violations, h, rng
+    ):
+        return ("e1", "-", 0, {}), 1
+
+    def fake_apply(
+        assignment, violations, h,
+        edge_id, new_label, delta, updates
+    ):
+        calls["count"] += 1
+        return h
+
+    for S in [0, 1, 2, 5]:
+
+        calls["count"] = 0
+
+        with patch(
+            __name__ + ".random_assignment",
+            side_effect=lambda *args: initial.copy()
+        ), patch(
+            __name__ + ".select_best_neighbor",
+            side_effect=fake_neighbor
+        ), patch(
+            __name__ + ".apply_move",
+            side_effect=fake_apply
+        ):
+
+            random_restart_hc(
+                csp, budget=1, seed=42, S=S
+            )
+
+        assert calls["count"] == S
+
+        print(
+            "S:", S,
+            "| Sideways moves:", calls["count"]
+        )
+
+    print("\nTEST 4 - Counter reset after improvement")
+
+    calls["count"] = 0
+
+    deltas = iter([0, 0, -1, 0, 0, 0])
+
+    def sequence_neighbor(
+        csp, assignment, domains,
+        violations, h, rng
+    ):
+        delta = next(deltas)
+        return ("e1", "-", delta, {}), 1
+
+    def sequence_apply(
+        assignment, violations, h,
+        edge_id, new_label, delta, updates
+    ):
+        calls["count"] += 1
+        return h + delta
+
+    with patch(
+        __name__ + ".random_assignment",
+        side_effect=lambda *args: initial.copy()
+    ), patch(
+        __name__ + ".select_best_neighbor",
+        side_effect=sequence_neighbor
+    ), patch(
+        __name__ + ".apply_move",
+        side_effect=sequence_apply
+    ):
+
+        random_restart_hc(
+            csp, budget=1, seed=42, S=2
+        )
+
+    assert calls["count"] == 5
+
+    print("2 sideways + 1 improvement + 2 sideways")
+    print("Accepted moves:", calls["count"])
+    print("Counter correctly reset")
+
+    print("\nTEST 5 - Compare sideways configurations")
+
+    csp = load_csp("instances/cube.json")
+
+    for S in [0, 1, 5, 10, 20]:
+
+        solved = 0
+        total_h = 0
+
+        for seed in range(30):
+
+            result = random_restart_hc(
+                csp, budget=10, seed=seed, S=S
+            )
+
+            result_h = objective(csp, result)
+
+            total_h += result_h
+
+            if result_h == 0:
+                solved += 1
+
+        print(
+            f"S={S:2d} | "
+            f"Solved={solved}/30 | "
+            f"Success={100 * solved / 30:.2f}% | "
+            f"Average best h={total_h / 30:.3f}"
+        )
+
+    print("\nTEST 6 - Fixed edges with sideways moves")
+
+    csp = load_csp("instances/cube.json")
+
+    for edge_id in [
+        "e1", "e2", "e3",
+        "e4", "e5", "e6"
+    ]:
+        csp.edges[edge_id].domain = ("R",)
+
+    result = random_restart_hc(
+        csp, budget=100, seed=42, S=10
+    )
+
+    for edge_id in [
+        "e1", "e2", "e3",
+        "e4", "e5", "e6"
+    ]:
+        assert result[edge_id] == "R"
+
+    assert objective(csp, result) == 0
+
+    print("All fixed edges preserved")
+    print("Best h:", objective(csp, result))
+
+    print("\nTEST 7 - Invalid sideways limit")
+
+    for invalid_S in [-1, 1.5, "2"]:
+
+        try:
+            random_restart_hc(
+                csp, budget=10,
+                seed=42, S=invalid_S
+            )
+
+        except ValueError:
+            print("Rejected S:", repr(invalid_S))
+
+        else:
+            raise AssertionError("Invalid S accepted")
+
+    print("\nAll sideways move tests passed!")
+
