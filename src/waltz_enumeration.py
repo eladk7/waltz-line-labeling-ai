@@ -1,4 +1,4 @@
-﻿import random
+import random
 from time import perf_counter
 
 from src.loader import load_csp
@@ -57,15 +57,19 @@ def enumerate_waltz(csp, N=100, seed=42, timeout=10):
                 return
 
             stats.decisions += 1
-            child = {j: list(d) for j, d in current.items()}
+            child = current.copy()
             child[junction] = [candidate]
 
             incoming = [a for a in arcs if a.target == junction]
 
             consistent, metrics = ac3(
-                child, arcs, initial_queue=incoming
+                child, arcs, initial_queue=incoming, deadline=start + timeout
             )
             update_stats(stats, metrics)
+
+            if metrics.timed_out or cancelled():
+                stop_reason = "TIME_LIMIT"
+                return
 
             before = len(solutions)
 
@@ -75,17 +79,19 @@ def enumerate_waltz(csp, N=100, seed=42, timeout=10):
             if len(solutions) == before and not stop_reason:
                 stats.backtracks += 1
 
-    consistent, metrics = ac3(domains, arcs)
+    consistent, metrics = ac3(domains, arcs, deadline=start + timeout)
     update_stats(stats, metrics)
 
-    if consistent:
+    if metrics.timed_out or cancelled():
+        stop_reason = "TIME_LIMIT"
+    elif consistent:
         stats.solved_by_propagation = all(
             len(d) == 1 for d in domains.values()
         )
         search(domains)
 
     stats.decided_by_propagation = (
-        not consistent or stats.solved_by_propagation
+        not stop_reason == "TIME_LIMIT" and (not consistent or stats.solved_by_propagation)
     )
 
     if stop_reason:

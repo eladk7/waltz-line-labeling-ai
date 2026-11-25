@@ -1,4 +1,5 @@
 from collections import deque
+from time import perf_counter
 from dataclasses import dataclass
 
 from src.loader import load_csp
@@ -20,6 +21,7 @@ class AC3Stats:
     constraint_checks: int = 0
     removed_tuples: int = 0
     max_queue_size: int = 0
+    timed_out: bool = False
 
 
 def ac3(
@@ -30,6 +32,7 @@ def ac3(
     *,
     on_event=None,
     cancel=None,
+    deadline=None,
 ):
 
     stats = AC3Stats()
@@ -56,6 +59,9 @@ def ac3(
 
     while queue:
 
+        if deadline is not None and perf_counter() >= deadline:
+            stats.timed_out = True
+            return False, stats
         check_cancel(cancel)
 
         arc = queue.popleft()
